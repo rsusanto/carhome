@@ -3,6 +3,7 @@ package id.rsusanto.carhome;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
+import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -866,6 +867,7 @@ public class MainActivity extends Activity {
                 "Android settings",
                 "Screen edges (fix cut-off borders)",
                 "Reset pinned apps",
+                "Match wallpaper to CarHome (recent apps, lock screen)",
                 "Check for updates (" + Updater.installedName(this) + ")",
         };
         menu("CarHome", items, new DialogInterface.OnClickListener() {
@@ -886,8 +888,51 @@ public class MainActivity extends Activity {
                         prefs.edit().remove(KEY_PINS).putBoolean(KEY_FIRST_RUN_DONE, false).apply();
                         onAppsLoaded(new ArrayList<>(allApps));
                         break;
-                    case 6: new Updater(MainActivity.this).check(); break;
+                    case 6: confirmMatchWallpaper(); break;
+                    case 7: new Updater(MainActivity.this).check(); break;
                 }
+            }
+        });
+    }
+
+    /**
+     * CarHome draws its own background, but the recent-apps screen (drawn by the system or the
+     * stock launcher) shows the system wallpaper, usually the old launcher's picture.
+     * Setting the wallpaper to CarHome's background color makes them match.
+     */
+    private void confirmMatchWallpaper() {
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Match wallpaper")
+                .setMessage("Replace the system wallpaper with CarHome's dark background? "
+                        + "It shows behind the recent-apps screen and on the lock screen.\n\n"
+                        + "You can pick another wallpaper later in Android settings.")
+                .setPositiveButton("Replace", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) { matchWallpaper(); }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void matchWallpaper() {
+        DisplayMetrics dm = new DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+        final int w = Math.max(1, dm.widthPixels), h = Math.max(1, dm.heightPixels);
+        bg.execute(new Runnable() {
+            @Override public void run() {
+                String msg;
+                try {
+                    Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                    b.eraseColor(Ui.BG);
+                    WallpaperManager.getInstance(MainActivity.this).setBitmap(b);
+                    b.recycle();
+                    msg = "Wallpaper now matches CarHome";
+                } catch (Exception ex) { // IOException, or SecurityException on locked-down firmware
+                    msg = "This head unit doesn't allow changing the wallpaper";
+                }
+                final String m = msg;
+                ui.post(new Runnable() {
+                    @Override public void run() { toast(m); }
+                });
             }
         });
     }

@@ -1,0 +1,8 @@
+# build output
+build/
+*.apk
+*.idsig
+
+# signing key: keep it private and backed up, never commit it
+*.keystore
+*.jks

@@ -866,6 +866,7 @@ public class MainActivity extends Activity {
                 "Android settings",
                 "Screen edges (fix cut-off borders)",
                 "Reset pinned apps",
+                "Check for updates (" + Updater.installedName(this) + ")",
         };
         menu("CarHome", items, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
@@ -885,6 +886,7 @@ public class MainActivity extends Activity {
                         prefs.edit().remove(KEY_PINS).putBoolean(KEY_FIRST_RUN_DONE, false).apply();
                         onAppsLoaded(new ArrayList<>(allApps));
                         break;
+                    case 6: new Updater(MainActivity.this).check(); break;
                 }
             }
         });

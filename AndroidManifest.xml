@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Settings → Check for updates (GitHub Releases) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <application
@@ -41,5 +44,12 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!-- Hands a downloaded update to the system installer on Android 7+ -->
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="id.rsusanto.carhome.apk"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

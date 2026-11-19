@@ -8,7 +8,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
-import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.location.Location;
 import android.location.LocationListener;
@@ -65,7 +64,8 @@ final class DrivePanel implements LocationListener {
     private boolean listening;
     private long lastFixAt;
 
-    private TextView speed, status;
+    private SpeedGauge speed;
+    private TextView status;
     private final TextView[] placeLabels = new TextView[PLACES];
     private final ImageView[] placeIcons = new ImageView[PLACES];
     View root;
@@ -82,33 +82,20 @@ final class DrivePanel implements LocationListener {
         int p = Ui.dp(act, 26);
         v.setPadding(p, p, p, p);
 
-        // speed block — tapping it flips to system info
+        // speed gauge — takes the free height above the destinations; tapping it flips to system info
         LinearLayout speedBlock = new LinearLayout(act);
         speedBlock.setOrientation(LinearLayout.VERTICAL);
+        speedBlock.setGravity(Gravity.CENTER_HORIZONTAL);
         speedBlock.setOnClickListener(onSpeedTap);
-        v.addView(speedBlock, new LinearLayout.LayoutParams(-1, -2));
+        v.addView(speedBlock, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        TextView cap = text("Speed", 14, Ui.TEXT_DIM);
-        speedBlock.addView(cap);
-
-        LinearLayout row = new LinearLayout(act);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.BOTTOM);
-        speedBlock.addView(row);
-
-        speed = text("--", 96, Color.WHITE);
-        speed.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-        speed.setIncludeFontPadding(false);
-        row.addView(speed);
-
-        TextView unit = text("km/h", 20, Ui.TEXT_DIM);
-        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(-2, -2);
-        ulp.leftMargin = Ui.dp(act, 10);
-        ulp.bottomMargin = Ui.dp(act, 12);
-        row.addView(unit, ulp);
+        speed = new SpeedGauge(act);
+        speed.setSpeed(-1);
+        speedBlock.addView(speed, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         status = text("Waiting for GPS…", 15, Ui.TEXT_DIM);
-        speedBlock.addView(status);
+        status.setGravity(Gravity.CENTER_HORIZONTAL);
+        speedBlock.addView(status, new LinearLayout.LayoutParams(-1, -2));
 
         // destinations
         for (int i = 0; i < PLACES; i++) {
@@ -345,7 +332,7 @@ final class DrivePanel implements LocationListener {
     private final Runnable staleCheck = new Runnable() {
         @Override public void run() {
             if (SystemClock.elapsedRealtime() - lastFixAt > STALE_MS) {
-                speed.setText("--");
+                speed.setSpeed(-1);
                 status.setText(lastFixAt == 0 ? "Waiting for GPS…" : "GPS signal lost");
             }
             ui.postDelayed(this, 2000);
@@ -357,7 +344,7 @@ final class DrivePanel implements LocationListener {
         lastFixAt = SystemClock.elapsedRealtime();
         float kmh = loc.hasSpeed() ? loc.getSpeed() * 3.6f : 0f;
         if (kmh < 2f) kmh = 0f; // GPS jitter while parked
-        speed.setText(String.valueOf(Math.round(kmh)));
+        speed.setSpeed(kmh);
         if (loc.hasBearing() && kmh >= 5f) {
             status.setText("Heading " + compass(loc.getBearing()));
         } else {

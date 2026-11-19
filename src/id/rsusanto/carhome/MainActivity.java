@@ -17,6 +17,7 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -100,9 +101,11 @@ public class MainActivity extends Activity {
     private MediaSessionManager sessionManager;
     private MediaController controller;
     private boolean sessionListenerRegistered;
+    private LinearLayout mediaCard;
     private ImageView mediaArt;
     private TextView mediaTitle, mediaArtist;
     private ImageButton mediaPlay;
+    private int mediaTint = -1;    // album-art colour on the media card (0 = default theme)
 
     // ---------------------------------------------------------------- lifecycle
 
@@ -187,7 +190,7 @@ public class MainActivity extends Activity {
         boolean landscape = dm.widthPixels >= dm.heightPixels;
 
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Ui.BG);
+        root.setBackground(Ui.screenBackground(this));
 
         int pad = Ui.dp(this, 20);
         if (landscape) {
@@ -202,7 +205,7 @@ public class MainActivity extends Activity {
 
         // ---- left: car silhouette  <->  system info (tap to flip)
         FrameLayout left = new FrameLayout(this);
-        left.setBackground(Ui.rounded(this, Ui.PANEL, 24));
+        left.setBackground(Ui.panel(this, Ui.PANEL, 24));
         LinearLayout.LayoutParams leftLp = landscape
                 ? new LinearLayout.LayoutParams(0, -1, 1f)
                 : new LinearLayout.LayoutParams(-1, 0, 40f);
@@ -402,7 +405,7 @@ public class MainActivity extends Activity {
         card.setGravity(Gravity.CENTER_VERTICAL);
         int p = Ui.dp(this, 12);
         card.setPadding(p, p, p, p);
-        card.setBackground(Ui.rounded(this, Ui.CARD, 18));
+        mediaCard = card;
         card.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { openMediaApp(); }
         });
@@ -1022,8 +1025,25 @@ public class MainActivity extends Activity {
                 || s.getState() == PlaybackState.STATE_BUFFERING);
     }
 
+    /** Tints the now-playing card and play button with the album's colour; 0 restores the default. */
+    private void applyMediaTint(int color) {
+        if (color == mediaTint) return;
+        mediaTint = color;
+        if (color == 0) {
+            mediaCard.setBackground(Ui.panel(this, Ui.CARD, 18));
+            mediaPlay.setBackground(Ui.circleButton(this));
+            return;
+        }
+        GradientDrawable g = Ui.panel(this, Ui.mix(Ui.CARD, color, 0.32f), Ui.CARD, 18);
+        g.setOrientation(GradientDrawable.Orientation.LEFT_RIGHT);
+        mediaCard.setBackground(g);
+        int rgb = color & 0x00FFFFFF;
+        mediaPlay.setBackground(Ui.circleButton(this, rgb | 0x66000000, rgb | 0xAA000000));
+    }
+
     private void showMediaIdle() {
         if (mediaTitle == null) return;
+        applyMediaTint(0);
         mediaArt.setImageResource(R.drawable.ic_music);
         mediaArt.setPadding(Ui.dp(this, 18), Ui.dp(this, 18), Ui.dp(this, 18), Ui.dp(this, 18));
         mediaPlay.setImageResource(R.drawable.ic_play);
@@ -1052,6 +1072,7 @@ public class MainActivity extends Activity {
         }
         mediaTitle.setText(title != null ? title : appLabel(controller.getPackageName()));
         mediaArtist.setText(artist != null ? artist : "");
+        applyMediaTint(art != null ? Ui.dominantColor(art) : 0);
         if (art != null) {
             mediaArt.setPadding(0, 0, 0, 0);
             mediaArt.setImageBitmap(art);

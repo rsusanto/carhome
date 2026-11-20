@@ -1,0 +1,3 @@
+- State in the decription that this is a vibe-coded app.
+- Audit anything that might not optimal and too resource-hungry, and find alternative solutions, if possible.
+- Always use one-line cc-style commit messages.

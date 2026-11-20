@@ -116,6 +116,10 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         allAppsTile = new AppEntry(null, "All apps", getDrawable(R.drawable.ti_grid_dots));
 
+        // Draw the background (and its glow) behind the status bar so the two blend with no seam.
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
         setContentView(buildUi());
         applyEdges();
         applyIconStyle();
@@ -191,6 +195,7 @@ public class MainActivity extends Activity {
 
         FrameLayout root = new FrameLayout(this);
         root.setBackground(Ui.screenBackground(this));
+        root.setFitsSystemWindows(true); // content stays below the status bar; the background doesn't
 
         int pad = Ui.dp(this, 20);
         if (landscape) {

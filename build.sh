@@ -23,7 +23,7 @@ printf 'VERSION_CODE=%s\nVERSION_NAME=%s\n' "$VERSION_CODE" "$VERSION_NAME" > "$
 echo "Building CarHome $VERSION_NAME (versionCode $VERSION_CODE)"
 
 aapt package -f -m -J "$OUT/gen" -M AndroidManifest.xml -S res -I "$SDK_JAR"
-javac -nowarn -Xlint:-options -source 8 -target 8 -encoding UTF-8 \
+javac -Xlint:deprecation -Xlint:-options -source 8 -target 8 -encoding UTF-8 \
   -bootclasspath "$SDK_JAR" -d "$OUT/classes" \
   $(find src "$OUT/gen" -name '*.java')
 dalvik-exchange --dex --output="$OUT/classes.dex" "$OUT/classes"

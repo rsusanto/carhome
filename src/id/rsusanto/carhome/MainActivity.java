@@ -1,10 +1,7 @@
 package id.rsusanto.carhome;
 
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.PendingIntent;
 import android.app.WallpaperManager;
-import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -17,11 +14,9 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.media.MediaMetadata;
-import android.media.session.MediaController;
-import android.media.session.MediaSessionManager;
-import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -32,8 +27,8 @@ import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.AdapterView;
+import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.ImageButton;
@@ -41,7 +36,6 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextClock;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import java.text.Collator;
 import java.util.ArrayList;
@@ -74,38 +68,31 @@ public class MainActivity extends Activity {
             "com.spotify.music",
     };
 
+    private static final int MAX_PINS = 5;
+    /** Space around the home screen and drawer, before any screen-edge correction. */
+    private static final int SCREEN_PAD_DP = 20;
+    /** Package changes often come in bursts (store updates): reload once they settle. */
+    private static final long RELOAD_DELAY_MS = 500;
+
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService bg = Executors.newSingleThreadExecutor();
 
     private PackageManager pm;
     private SharedPreferences prefs;
+    private boolean destroyed;
 
     private final Map<String, AppEntry> appsByKey = new HashMap<>();
     private final List<AppEntry> allApps = new ArrayList<>();
     private AppEntry allAppsTile;
 
-    private static final int MAX_PINS = 5;
-
     private AppAdapter drawerAdapter;
     private View drawer;
     private SquareGrid homeGrid;
-    private View carView, infoView; // carView = the drive panel
+    private View carView, infoView; // the two faces of the left panel
     private DrivePanel drivePanel;
+    private InfoPanel infoPanel;
+    private NowPlaying nowPlaying;
     private LinearLayout home;
-    private HomeRow homeRow;
-    private TextView infoCpu, infoNet;
-    private TextView infoScreen, infoRam, infoStorage, infoTemp, infoAndroid;
-    private LinearLayout infoRamBar, infoStorageBar;
-
-    // now playing
-    private MediaSessionManager sessionManager;
-    private MediaController controller;
-    private boolean sessionListenerRegistered;
-    private LinearLayout mediaCard;
-    private ImageView mediaArt;
-    private TextView mediaTitle, mediaArtist;
-    private ImageButton mediaPlay;
-    private int mediaTint = -1;    // album-art colour on the media card (0 = default theme)
 
     // ---------------------------------------------------------------- lifecycle
 
@@ -139,17 +126,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        setupMedia(); // the user may have just granted notification access
+        nowPlaying.resume();
         drivePanel.start();
-        if (infoView.getVisibility() == View.VISIBLE) {
-            ui.removeCallbacks(infoTicker);
-            infoTicker.run();
-        }
+        if (infoView.getVisibility() == View.VISIBLE) infoPanel.start();
     }
 
     @Override
     protected void onPause() {
-        ui.removeCallbacks(infoTicker);
+        infoPanel.stop();
         drivePanel.stop();
         super.onPause();
     }
@@ -174,17 +158,23 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
         try { unregisterReceiver(packageReceiver); } catch (Exception ignored) {}
-        if (sessionListenerRegistered) {
-            sessionManager.removeOnActiveSessionsChangedListener(sessionsListener);
-        }
-        watchSessions(null);
+        ui.removeCallbacks(reloadApps);
+        nowPlaying.destroy();
         bg.shutdownNow();
         super.onDestroy();
     }
 
     private final BroadcastReceiver packageReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) { loadApps(); }
+        @Override public void onReceive(Context c, Intent i) {
+            ui.removeCallbacks(reloadApps);
+            ui.postDelayed(reloadApps, RELOAD_DELAY_MS);
+        }
+    };
+
+    private final Runnable reloadApps = new Runnable() {
+        @Override public void run() { loadApps(); }
     };
 
     // ---------------------------------------------------------------- UI
@@ -197,7 +187,7 @@ public class MainActivity extends Activity {
         root.setBackground(Ui.screenBackground(this));
         root.setFitsSystemWindows(true); // content stays below the status bar; the background doesn't
 
-        int pad = Ui.dp(this, 20);
+        HomeRow homeRow = null;
         if (landscape) {
             homeRow = new HomeRow(this, Ui.dp(this, 14), Ui.dp(this, 14));
             home = homeRow;
@@ -205,16 +195,16 @@ public class MainActivity extends Activity {
             home = new LinearLayout(this);
             home.setOrientation(LinearLayout.VERTICAL);
         }
-        home.setPadding(pad, pad, pad, pad);
-        root.addView(home, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(home, new FrameLayout.LayoutParams(-1, -1)); // padding: applyEdges()
 
-        // ---- left: car silhouette  <->  system info (tap to flip)
+        // ---- left: drive panel  <->  system info (tap to flip)
+        int gap = Ui.dp(this, SCREEN_PAD_DP);
         FrameLayout left = new FrameLayout(this);
         left.setBackground(Ui.panel(this, Ui.PANEL, 24));
         LinearLayout.LayoutParams leftLp = landscape
                 ? new LinearLayout.LayoutParams(0, -1, 1f)
                 : new LinearLayout.LayoutParams(-1, 0, 40f);
-        if (landscape) leftLp.rightMargin = pad; else leftLp.bottomMargin = pad;
+        if (landscape) leftLp.rightMargin = gap; else leftLp.bottomMargin = gap;
         home.addView(left, leftLp);
 
         View.OnClickListener toggleInfo = new View.OnClickListener() {
@@ -223,10 +213,13 @@ public class MainActivity extends Activity {
         drivePanel = new DrivePanel(this, prefs);
         carView = drivePanel.build(toggleInfo);
         left.addView(carView, new FrameLayout.LayoutParams(-1, -1));
-        left.addView(buildInfoView(), new FrameLayout.LayoutParams(-1, -1));
+        infoPanel = new InfoPanel(this, bg);
+        infoView = infoPanel.build();
+        infoView.setVisibility(View.GONE);
         infoView.setOnClickListener(toggleInfo);
+        left.addView(infoView, new FrameLayout.LayoutParams(-1, -1));
 
-        ImageButton info = iconButton(R.drawable.ti_info_circle, 48, 12);
+        ImageButton info = Ui.iconButton(this, R.drawable.ti_info_circle, 48, 12, "System info");
         info.setOnClickListener(toggleInfo);
         FrameLayout.LayoutParams infoLp = new FrameLayout.LayoutParams(Ui.dp(this, 48), Ui.dp(this, 48),
                 Gravity.TOP | Gravity.END);
@@ -234,7 +227,7 @@ public class MainActivity extends Activity {
         infoLp.rightMargin = Ui.dp(this, 60);
         left.addView(info, infoLp);
 
-        ImageButton gear = iconButton(R.drawable.ic_settings, 48, 12);
+        ImageButton gear = Ui.iconButton(this, R.drawable.ic_settings, 48, 12, "CarHome settings");
         gear.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showSettingsMenu(); }
         });
@@ -255,44 +248,14 @@ public class MainActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
         right.addView(top, new LinearLayout.LayoutParams(-1, 0, 1f));
+        top.addView(buildClockRow(), new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout clockRow = new LinearLayout(this);
-        clockRow.setOrientation(LinearLayout.HORIZONTAL);
-        clockRow.setGravity(Gravity.CENTER_VERTICAL);
-        top.addView(clockRow, new LinearLayout.LayoutParams(-1, -2));
-
-        TextClock clock = new TextClock(this);
-        clock.setFormat24Hour("HH:mm");
-        clock.setFormat12Hour("h:mm");
-        clock.setTextColor(Color.WHITE);
-        clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 60);
-        clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-        clock.setIncludeFontPadding(false);
-        clockRow.addView(clock);
-
-        LinearLayout dateCol = new LinearLayout(this);
-        dateCol.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(-2, -2);
-        dlp.leftMargin = Ui.dp(this, 16);
-        clockRow.addView(dateCol, dlp);
-
-        TextClock day = new TextClock(this);
-        day.setFormat24Hour("EEEE");
-        day.setFormat12Hour("EEEE");
-        day.setTextColor(Color.WHITE);
-        day.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        dateCol.addView(day);
-
-        TextClock date = new TextClock(this);
-        date.setFormat24Hour("d MMMM yyyy");
-        date.setFormat12Hour("d MMMM yyyy");
-        date.setTextColor(Ui.TEXT_DIM);
-        date.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        dateCol.addView(date);
-
+        nowPlaying = new NowPlaying(this, new Runnable() {
+            @Override public void run() { openMusicApp(); }
+        });
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-1, -2);
         mlp.topMargin = Ui.dp(this, 12);
-        top.addView(buildMediaRow(), mlp);
+        top.addView(nowPlaying.build(), mlp);
 
         homeGrid = new SquareGrid(this, Ui.dp(this, 14));
         LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(-1, -2);
@@ -304,178 +267,40 @@ public class MainActivity extends Activity {
         return root;
     }
 
-    private View buildInfoView() {
-        LinearLayout v = new LinearLayout(this);
-        v.setOrientation(LinearLayout.VERTICAL);
-        v.setGravity(Gravity.CENTER_VERTICAL);
-        int p = Ui.dp(this, 26);
-        v.setPadding(p, p, p, p);
-        v.setVisibility(View.GONE);
+    private View buildClockRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView title = new TextView(this);
-        title.setText("System  ·  tap to go back");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-        v.addView(title);
+        TextClock clock = clock("HH:mm", "h:mm", 60, Color.WHITE);
+        clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+        clock.setIncludeFontPadding(false);
+        row.addView(clock);
 
-        infoScreen = infoRow(v, "Screen", null);
-        infoCpu = infoRow(v, "Processor", null);
-        LinearLayout[] ramBar = new LinearLayout[1];
-        infoRam = infoRow(v, "RAM available", ramBar);
-        infoRamBar = ramBar[0];
-        LinearLayout[] stBar = new LinearLayout[1];
-        infoStorage = infoRow(v, "Storage available", stBar);
-        infoStorageBar = stBar[0];
-        infoNet = infoRow(v, "Internet", null);
-        infoTemp = infoRow(v, "Temperature", null);
-        infoAndroid = infoRow(v, "System", null);
-
-        infoView = v;
-        return v;
+        LinearLayout dateCol = new LinearLayout(this);
+        dateCol.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(-2, -2);
+        dlp.leftMargin = Ui.dp(this, 16);
+        row.addView(dateCol, dlp);
+        dateCol.addView(clock("EEEE", "EEEE", 18, Color.WHITE));
+        dateCol.addView(clock("d MMMM yyyy", "d MMMM yyyy", 16, Ui.TEXT_DIM));
+        return row;
     }
 
-    /** Adds "label / value [/ bar]" to the panel and returns the value TextView. */
-    private TextView infoRow(LinearLayout parent, String label, LinearLayout[] barOut) {
-        TextView l = new TextView(this);
-        l.setText(label);
-        l.setTextColor(Ui.TEXT_DIM);
-        l.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(-1, -2);
-        llp.topMargin = Ui.dp(this, 10);
-        parent.addView(l, llp);
-
-        TextView val = new TextView(this);
-        val.setTextColor(Color.WHITE);
-        val.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        parent.addView(val);
-
-        if (barOut != null) {
-            LinearLayout bar = new LinearLayout(this);
-            bar.setOrientation(LinearLayout.HORIZONTAL);
-            bar.setBackground(Ui.rounded(this, Ui.CARD_PRESSED, 3));
-            View used = new View(this);
-            used.setBackground(Ui.rounded(this, Ui.ACCENT, 3));
-            bar.addView(used, new LinearLayout.LayoutParams(0, -1, 0f));
-            bar.addView(new View(this), new LinearLayout.LayoutParams(0, -1, 1f));
-            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 6));
-            blp.topMargin = Ui.dp(this, 6);
-            parent.addView(bar, blp);
-            barOut[0] = bar;
-        }
-        return val;
-    }
-
-    /** Sets the filled share of a bar (0..1). */
-    private static void setBar(LinearLayout bar, float used) {
-        used = Math.max(0f, Math.min(1f, used));
-        ((LinearLayout.LayoutParams) bar.getChildAt(0).getLayoutParams()).weight = used;
-        ((LinearLayout.LayoutParams) bar.getChildAt(1).getLayoutParams()).weight = 1f - used;
-        bar.requestLayout();
+    private TextClock clock(String format24, String format12, float sp, int color) {
+        TextClock c = new TextClock(this);
+        c.setFormat24Hour(format24);
+        c.setFormat12Hour(format12);
+        c.setTextColor(color);
+        c.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        return c;
     }
 
     private void showInfo(boolean show) {
         infoView.setVisibility(show ? View.VISIBLE : View.GONE);
         carView.setVisibility(show ? View.GONE : View.VISIBLE);
         prefs.edit().putBoolean(KEY_SHOW_INFO, show).apply();
-        ui.removeCallbacks(infoTicker);
-        if (show) infoTicker.run();
-    }
-
-    private final Runnable infoTicker = new Runnable() {
-        @Override public void run() {
-            updateInfo();
-            ui.postDelayed(this, 2000);
-        }
-    };
-
-    private void updateInfo() {
-        infoScreen.setText(SystemInfo.screen(this));
-        long[] ram = SystemInfo.ram(this);
-        infoRam.setText(SystemInfo.gb(ram[0]) + " free of " + SystemInfo.gb(ram[1]));
-        setBar(infoRamBar, ram[1] == 0 ? 0 : 1f - (float) ram[0] / ram[1]);
-        long[] st = SystemInfo.storage();
-        infoStorage.setText(SystemInfo.gb(st[0]) + " free of " + SystemInfo.gb(st[1]));
-        setBar(infoStorageBar, st[1] == 0 ? 0 : 1f - (float) st[0] / st[1]);
-        float t = SystemInfo.temperature();
-        infoTemp.setText(Float.isNaN(t) ? "Not available on this unit"
-                : String.format(java.util.Locale.US, "%.0f °C", t));
-        infoAndroid.setText(SystemInfo.android());
-        if (infoCpu.getText().length() == 0) infoCpu.setText(SystemInfo.cpu()); // doesn't change
-        infoNet.setText(SystemInfo.internet(this));
-    }
-
-    private View buildMediaRow() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        int p = Ui.dp(this, 12);
-        card.setPadding(p, p, p, p);
-        mediaCard = card;
-        card.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { openMediaApp(); }
-        });
-
-        mediaArt = new ImageView(this);
-        mediaArt.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        mediaArt.setBackground(Ui.rounded(this, 0xFF262D38, 12));
-        mediaArt.setClipToOutline(true);
-        int art = Ui.dp(this, 60);
-        card.addView(mediaArt, new LinearLayout.LayoutParams(art, art));
-
-        LinearLayout texts = new LinearLayout(this);
-        texts.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, -2, 1f);
-        tlp.leftMargin = Ui.dp(this, 12);
-        tlp.rightMargin = Ui.dp(this, 8);
-        card.addView(texts, tlp);
-
-        mediaTitle = new TextView(this);
-        mediaTitle.setTextColor(Color.WHITE);
-        mediaTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        mediaTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        mediaTitle.setSingleLine(true);
-        mediaTitle.setEllipsize(TextUtils.TruncateAt.END);
-        texts.addView(mediaTitle);
-
-        mediaArtist = new TextView(this);
-        mediaArtist.setTextColor(Ui.TEXT_DIM);
-        mediaArtist.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        mediaArtist.setSingleLine(true);
-        mediaArtist.setEllipsize(TextUtils.TruncateAt.END);
-        texts.addView(mediaArtist);
-
-        ImageButton prev = iconButton(R.drawable.ic_prev, 48, 12);
-        mediaPlay = iconButton(R.drawable.ic_play, 56, 14);
-        ImageButton next = iconButton(R.drawable.ic_next, 48, 12);
-        prev.setBackground(Ui.circleButton(this));
-        mediaPlay.setBackground(Ui.circleButton(this));
-        next.setBackground(Ui.circleButton(this));
-        card.addView(prev);
-        addGap(card, 10);
-        card.addView(mediaPlay);
-        addGap(card, 10);
-        card.addView(next);
-
-        prev.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                if (controller != null) controller.getTransportControls().skipToPrevious();
-            }
-        });
-        next.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                if (controller != null) controller.getTransportControls().skipToNext();
-            }
-        });
-        mediaPlay.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                if (controller == null) { openMediaApp(); return; }
-                if (isPlaying(controller)) controller.getTransportControls().pause();
-                else controller.getTransportControls().play();
-            }
-        });
-
-        showMediaIdle();
-        return card;
+        if (show) infoPanel.start(); else infoPanel.stop();
     }
 
     // ---- home tiles
@@ -496,10 +321,7 @@ public class MainActivity extends Activity {
         ilp.setMargins(m, m, m, m);
         t.addView(icon, ilp);
 
-        TextView label = new TextView(this);
-        label.setText(e.label);
-        label.setTextColor(Color.WHITE);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        TextView label = Ui.text(this, e.label, 15, Color.WHITE);
         label.setSingleLine(true);
         label.setEllipsize(TextUtils.TruncateAt.END);
         label.setGravity(Gravity.CENTER);
@@ -520,20 +342,21 @@ public class MainActivity extends Activity {
 
     private View emptyTile() {
         FrameLayout t = new FrameLayout(this);
-        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(Ui.dp(this, 18));
-        g.setStroke(Ui.dp(this, 2), 0xFF2A3240, Ui.dp(this, 10), Ui.dp(this, 8));
+        g.setStroke(Ui.dp(this, 2), Ui.CARD_PRESSED, Ui.dp(this, 10), Ui.dp(this, 8));
         t.setBackground(g);
+        t.setContentDescription("Empty slot: add an app");
         ImageView plus = new ImageView(this);
-        android.graphics.drawable.Drawable d = getDrawable(R.drawable.ti_plus).mutate();
-        d.setTint(0xFF3A4556);
+        Drawable d = getDrawable(R.drawable.ti_plus).mutate();
+        d.setTint(Ui.OUTLINE);
         plus.setImageDrawable(d);
         int s = Ui.dp(this, 40);
         t.addView(plus, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
         t.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 showDrawer(true);
-                toast("Long-press an app to pin it");
+                Ui.toast(MainActivity.this, "Long-press an app to pin it");
             }
         });
         return t;
@@ -544,8 +367,7 @@ public class MainActivity extends Activity {
         d.setOrientation(LinearLayout.VERTICAL);
         // No background of its own: the home screen is hidden while the drawer is open, so the
         // drawer sits on the same glowing background (and status bar) as home, with no seam.
-        int pad = Ui.dp(this, 20);
-        d.setPadding(pad, pad, pad, 0);
+        // Padding: applyEdges().
         d.setVisibility(View.GONE);
         d.setClickable(true); // swallow touches so they don't reach the home screen
 
@@ -554,21 +376,13 @@ public class MainActivity extends Activity {
         header.setGravity(Gravity.CENTER_VERTICAL);
         d.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
-        TextView title = new TextView(this);
-        title.setText("All apps");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
-        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        header.addView(Ui.text(this, "All apps", 26, Color.WHITE), new LinearLayout.LayoutParams(0, -2, 1f));
 
-        TextView hint = new TextView(this);
-        hint.setText("Long-press an app to pin it");
-        hint.setTextColor(Ui.TEXT_DIM);
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-2, -2);
         hlp.rightMargin = Ui.dp(this, 16);
-        header.addView(hint, hlp);
+        header.addView(Ui.text(this, "Long-press an app to pin it", 14, Ui.TEXT_DIM), hlp);
 
-        ImageButton close = iconButton(R.drawable.ic_close, 52, 12);
+        ImageButton close = Ui.iconButton(this, R.drawable.ic_close, 52, 12, "Close");
         close.setBackground(Ui.circleButton(this));
         close.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showDrawer(false); }
@@ -580,10 +394,10 @@ public class MainActivity extends Activity {
         grid.setColumnWidth(Ui.dp(this, 120));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setVerticalSpacing(Ui.dp(this, 6));
-        grid.setSelector(new android.graphics.drawable.ColorDrawable(0));
+        grid.setSelector(new ColorDrawable(0));
         grid.setClipToPadding(false);
         grid.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 20));
-        drawerAdapter = new AppAdapter(this, Ui.dp(this, 56), Ui.dp(this, 118), 14, false);
+        drawerAdapter = new AppAdapter(this, Ui.dp(this, 56), Ui.dp(this, 118), 14);
         grid.setAdapter(drawerAdapter);
         grid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
@@ -602,22 +416,6 @@ public class MainActivity extends Activity {
         return d;
     }
 
-    private ImageButton iconButton(int res, int sizeDp, int padDp) {
-        ImageButton b = new ImageButton(this);
-        b.setImageResource(res);
-        b.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        b.setBackground(Ui.pressOnlyBackground(this));
-        int p = Ui.dp(this, padDp);
-        b.setPadding(p, p, p, p);
-        int s = Ui.dp(this, sizeDp);
-        b.setLayoutParams(new LinearLayout.LayoutParams(s, s));
-        return b;
-    }
-
-    private void addGap(LinearLayout row, int dp) {
-        row.addView(new View(this), new LinearLayout.LayoutParams(Ui.dp(this, dp), 1));
-    }
-
     // ---- screen edge correction (some head-unit panels hide a few pixels under the bezel)
 
     private static final String[] EDGE_KEYS = {"edge_left", "edge_top", "edge_right", "edge_bottom"};
@@ -626,11 +424,12 @@ public class MainActivity extends Activity {
 
     private int edge(int i) { return prefs.getInt(EDGE_KEYS[i], 0); }
 
+    /** The only place home and drawer padding is set: base space plus each side's correction. */
     private void applyEdges() {
-        int pad = Ui.dp(this, 20);
+        int pad = Ui.dp(this, SCREEN_PAD_DP);
         int l = Ui.dp(this, edge(0)), t = Ui.dp(this, edge(1)), r = Ui.dp(this, edge(2)), b = Ui.dp(this, edge(3));
         home.setPadding(pad + l, pad + t, pad + r, pad + b);
-        drawer.setPadding(pad + l, pad + t, pad + r, b);
+        drawer.setPadding(pad + l, pad + t, pad + r, b); // the app grid scrolls to the bottom edge
     }
 
     private void showEdgesDialog() {
@@ -638,14 +437,10 @@ public class MainActivity extends Activity {
         form.setOrientation(LinearLayout.VERTICAL);
         int p = Ui.dp(this, 20);
         form.setPadding(p, Ui.dp(this, 4), p, 0);
-        TextView help = new TextView(this);
-        help.setText("Adds extra space on a side whose edge is hidden by the screen bezel. Changes show immediately.");
-        help.setTextColor(Ui.TEXT_DIM);
-        help.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        form.addView(help);
-        final TextView[] vals = new TextView[4];
-        for (int i = 0; i < 4; i++) {
-            final int side = i;
+        form.addView(Ui.text(this,
+                "Adds extra space on a side whose edge is hidden by the screen bezel. Changes show immediately.",
+                14, Ui.TEXT_DIM));
+        for (int i = 0; i < EDGE_KEYS.length; i++) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
@@ -653,43 +448,14 @@ public class MainActivity extends Activity {
             rlp.topMargin = Ui.dp(this, 10);
             form.addView(row, rlp);
 
-            TextView name = new TextView(this);
-            name.setText(EDGE_NAMES[i]);
-            name.setTextColor(Color.WHITE);
-            name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-            row.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
-
-            android.widget.Button minus = new android.widget.Button(this);
-            minus.setText("–");
-            minus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-            row.addView(minus, new LinearLayout.LayoutParams(Ui.dp(this, 64), Ui.dp(this, 52)));
-
-            final TextView val = new TextView(this);
-            val.setTextColor(Color.WHITE);
-            val.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+            row.addView(Ui.text(this, EDGE_NAMES[i], 18, Color.WHITE), new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView val = Ui.text(this, edge(i) + " dp", 18, Color.WHITE);
             val.setGravity(Gravity.CENTER);
+            row.addView(edgeButton("–", stepper(i, -EDGE_STEP, val)));
             row.addView(val, new LinearLayout.LayoutParams(Ui.dp(this, 72), -2));
-            vals[i] = val;
-
-            android.widget.Button plus = new android.widget.Button(this);
-            plus.setText("+");
-            plus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-            row.addView(plus, new LinearLayout.LayoutParams(Ui.dp(this, 64), Ui.dp(this, 52)));
-
-            View.OnClickListener step = new View.OnClickListener() {
-                @Override public void onClick(View v) {
-                    int nv = edge(side) + (v == null ? 0 : (((android.widget.Button) v).getText().toString().equals("+") ? EDGE_STEP : -EDGE_STEP));
-                    nv = Math.max(0, Math.min(EDGE_MAX, nv));
-                    prefs.edit().putInt(EDGE_KEYS[side], nv).apply();
-                    val.setText(nv + " dp");
-                    applyEdges();
-                }
-            };
-            minus.setOnClickListener(step);
-            plus.setOnClickListener(step);
-            val.setText(edge(i) + " dp");
+            row.addView(edgeButton("+", stepper(i, EDGE_STEP, val)));
         }
-        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        Ui.dialog(this)
                 .setTitle("Screen edges")
                 .setView(form)
                 .setPositiveButton("Done", null)
@@ -702,6 +468,27 @@ public class MainActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    private Button edgeButton(String text, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        b.setOnClickListener(l);
+        b.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(this, 64), Ui.dp(this, 52)));
+        return b;
+    }
+
+    /** Moves one side's edge by {@code delta} dp and shows the new value in {@code val}. */
+    private View.OnClickListener stepper(final int side, final int delta, final TextView val) {
+        return new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                int nv = Math.max(0, Math.min(EDGE_MAX, edge(side) + delta));
+                prefs.edit().putInt(EDGE_KEYS[side], nv).apply();
+                val.setText(nv + " dp");
+                applyEdges();
+            }
+        };
     }
 
     private boolean simpleIcons() {
@@ -742,7 +529,7 @@ public class MainActivity extends Activity {
                     }
                 });
                 ui.post(new Runnable() {
-                    @Override public void run() { onAppsLoaded(list); }
+                    @Override public void run() { if (!destroyed) onAppsLoaded(list); }
                 });
             }
         });
@@ -810,99 +597,150 @@ public class MainActivity extends Activity {
             startActivity(i);
             showDrawer(false);
         } catch (Exception ex) {
-            toast("Can't open " + e.label);
+            Ui.toast(this, "Can't open " + e.label);
         }
+    }
+
+    /** Now-playing tapped with no player known: open the first pinned music-ish app, else the drawer. */
+    private void openMusicApp() {
+        for (String k : loadPins()) {
+            AppEntry e = appsByKey.get(k);
+            if (e == null) continue;
+            String pkg = e.component.getPackageName();
+            if (pkg.contains("music") || pkg.contains("spotify") || pkg.contains("youtube")) {
+                launch(e);
+                return;
+            }
+        }
+        showDrawer(true);
     }
 
     // ---------------------------------------------------------------- menus
 
+    /** Applies a change to the current pins, then saves them and redraws home. */
+    private abstract class PinEdit implements Runnable {
+        @Override public final void run() {
+            List<String> pins = currentPins();
+            edit(pins);
+            savePins(pins);
+            refreshHome();
+        }
+
+        abstract void edit(List<String> pins);
+    }
+
     private void showPinnedMenu(final AppEntry e) {
-        final String[] items = {"Move earlier", "Move later", "Unpin", "App info"};
-        menu(e.label, items, new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface d, int which) {
-                List<String> pins = currentPins();
-                int idx = pins.indexOf(e.key());
-                switch (which) {
-                    case 0: if (idx > 0) Collections.swap(pins, idx, idx - 1); break;
-                    case 1: if (idx >= 0 && idx < pins.size() - 1) Collections.swap(pins, idx, idx + 1); break;
-                    case 2: pins.remove(e.key()); break;
-                    case 3: openAppInfo(e.component.getPackageName()); return;
-                }
-                savePins(pins);
-                refreshHome();
-            }
-        });
+        final String key = e.key();
+        new Ui.Menu()
+                .add("Move earlier", new PinEdit() {
+                    @Override void edit(List<String> pins) {
+                        int idx = pins.indexOf(key);
+                        if (idx > 0) Collections.swap(pins, idx, idx - 1);
+                    }
+                })
+                .add("Move later", new PinEdit() {
+                    @Override void edit(List<String> pins) {
+                        int idx = pins.indexOf(key);
+                        if (idx >= 0 && idx < pins.size() - 1) Collections.swap(pins, idx, idx + 1);
+                    }
+                })
+                .add("Unpin", new PinEdit() {
+                    @Override void edit(List<String> pins) { pins.remove(key); }
+                })
+                .add("App info", appInfo(e))
+                .show(this, e.label);
     }
 
     private void showDrawerMenu(final AppEntry e) {
-        final List<String> pins = currentPins();
-        final boolean pinned = pins.contains(e.key());
+        final String key = e.key();
+        List<String> pins = currentPins();
+        final boolean pinned = pins.contains(key);
         final boolean full = pins.size() >= MAX_PINS;
-        final AppEntry last = full ? appsByKey.get(pins.get(MAX_PINS - 1)) : null;
+        AppEntry last = full ? appsByKey.get(pins.get(MAX_PINS - 1)) : null;
+        final String lastName = last != null ? last.label : "the 5th app";
         String pinLabel = pinned ? "Unpin from home"
-                : full ? "Pin to home (replaces " + (last != null ? last.label : "the 5th app") + ")"
+                : full ? "Pin to home (replaces " + lastName + ")"
                 : "Pin to home";
-        final String[] items = {pinLabel, "App info", "Uninstall"};
-        menu(e.label, items, new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface d, int which) {
-                if (which == 0) {
-                    if (pinned) {
-                        pins.remove(e.key());
-                        toast("Unpinned");
-                    } else if (full) {
-                        pins.set(MAX_PINS - 1, e.key()); // home has 5 slots: replace the last one
-                        toast("Pinned, replacing " + (last != null ? last.label : "the 5th app"));
-                    } else {
-                        pins.add(e.key());
-                        toast("Pinned to home");
+        new Ui.Menu()
+                .add(pinLabel, new PinEdit() {
+                    @Override void edit(List<String> pins) {
+                        if (pinned) {
+                            pins.remove(key);
+                            Ui.toast(MainActivity.this, "Unpinned");
+                        } else if (full) {
+                            pins.set(MAX_PINS - 1, key); // home has 5 slots: replace the last one
+                            Ui.toast(MainActivity.this, "Pinned, replacing " + lastName);
+                        } else {
+                            pins.add(key);
+                            Ui.toast(MainActivity.this, "Pinned to home");
+                        }
                     }
-                    savePins(pins);
-                    refreshHome();
-                } else if (which == 1) {
-                    openAppInfo(e.component.getPackageName());
-                } else {
-                    tryStart(new Intent(Intent.ACTION_DELETE,
-                            Uri.parse("package:" + e.component.getPackageName())));
-                }
-            }
-        });
+                })
+                .add("App info", appInfo(e))
+                .add("Uninstall", new Runnable() {
+                    @Override public void run() {
+                        Ui.tryStart(MainActivity.this, new Intent(Intent.ACTION_DELETE,
+                                Uri.parse("package:" + e.component.getPackageName())));
+                    }
+                })
+                .show(this, e.label);
+    }
+
+    private Runnable appInfo(final AppEntry e) {
+        return new Runnable() {
+            @Override public void run() { Ui.openAppInfo(MainActivity.this, e.component.getPackageName()); }
+        };
     }
 
     private void showSettingsMenu() {
         final boolean simple = simpleIcons();
-        final String[] items = {
-                "Choose default home app",
-                "Enable now-playing controls",
-                simple ? "Icons: simple (switch to original)" : "Icons: original (switch to simple)",
-                "Android settings",
-                "Screen edges (fix cut-off borders)",
-                "Reset pinned apps",
-                "Match wallpaper to CarHome (recent apps, lock screen)",
-                "Check for updates (" + Updater.installedName(this) + ")",
-        };
-        menu("CarHome", items, new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface d, int which) {
-                switch (which) {
-                    case 0:
-                        if (!tryStart(new Intent(Settings.ACTION_HOME_SETTINGS)))
-                            tryStart(new Intent(Settings.ACTION_SETTINGS));
-                        break;
-                    case 1: openNotificationAccess(); break;
-                    case 2:
-                        prefs.edit().putBoolean(KEY_SIMPLE_ICONS, !simple).apply();
-                        applyIconStyle();
-                        break;
-                    case 3: tryStart(new Intent(Settings.ACTION_SETTINGS)); break;
-                    case 4: showEdgesDialog(); break;
-                    case 5:
+        new Ui.Menu()
+                .add("Choose default home app", new Runnable() {
+                    @Override public void run() {
+                        if (!Ui.tryStart(MainActivity.this, new Intent(Settings.ACTION_HOME_SETTINGS)))
+                            Ui.tryStart(MainActivity.this, new Intent(Settings.ACTION_SETTINGS));
+                    }
+                })
+                .add("Enable now-playing controls", new Runnable() {
+                    @Override public void run() { nowPlaying.openAccessSettings(); }
+                })
+                .add(simple ? "Icons: simple (switch to original)" : "Icons: original (switch to simple)",
+                        new Runnable() {
+                            @Override public void run() {
+                                prefs.edit().putBoolean(KEY_SIMPLE_ICONS, !simple).apply();
+                                applyIconStyle();
+                            }
+                        })
+                .add("Android settings", new Runnable() {
+                    @Override public void run() { Ui.tryStart(MainActivity.this, new Intent(Settings.ACTION_SETTINGS)); }
+                })
+                .add("Screen edges (fix cut-off borders)", new Runnable() {
+                    @Override public void run() { showEdgesDialog(); }
+                })
+                .add("Reset pinned apps", new Runnable() {
+                    @Override public void run() { confirmResetPins(); }
+                })
+                .add("Match wallpaper to CarHome (recent apps, lock screen)", new Runnable() {
+                    @Override public void run() { confirmMatchWallpaper(); }
+                })
+                .add("Check for updates (" + Updater.installedName(this) + ")", new Runnable() {
+                    @Override public void run() { new Updater(MainActivity.this).check(); }
+                })
+                .show(this, "CarHome");
+    }
+
+    private void confirmResetPins() {
+        Ui.dialog(this)
+                .setTitle("Reset pinned apps")
+                .setMessage("Replace your pinned apps with the default ones?")
+                .setPositiveButton("Reset", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
                         prefs.edit().remove(KEY_PINS).putBoolean(KEY_FIRST_RUN_DONE, false).apply();
                         onAppsLoaded(new ArrayList<>(allApps));
-                        break;
-                    case 6: confirmMatchWallpaper(); break;
-                    case 7: new Updater(MainActivity.this).check(); break;
-                }
-            }
-        });
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     /**
@@ -911,7 +749,7 @@ public class MainActivity extends Activity {
      * Setting the wallpaper to CarHome's background color makes them match.
      */
     private void confirmMatchWallpaper() {
-        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        Ui.dialog(this)
                 .setTitle("Match wallpaper")
                 .setMessage("Replace the system wallpaper with CarHome's dark background? "
                         + "It shows behind the recent-apps screen and on the lock screen.\n\n"
@@ -941,199 +779,9 @@ public class MainActivity extends Activity {
                 }
                 final String m = msg;
                 ui.post(new Runnable() {
-                    @Override public void run() { toast(m); }
+                    @Override public void run() { Ui.toast(MainActivity.this, m); }
                 });
             }
         });
-    }
-
-    private void menu(String title, String[] items, DialogInterface.OnClickListener l) {
-        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle(title)
-                .setItems(items, l)
-                .show();
-    }
-
-    private void openAppInfo(String pkg) {
-        tryStart(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg)));
-    }
-
-    private boolean tryStart(Intent i) {
-        try {
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(i);
-            return true;
-        } catch (ActivityNotFoundException | SecurityException ex) {
-            toast("Not available on this device");
-            return false;
-        }
-    }
-
-    private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
-    }
-
-    // ---------------------------------------------------------------- now playing
-
-    private boolean hasNotificationAccess() {
-        String s = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-        return s != null && s.contains(getPackageName());
-    }
-
-    private void openNotificationAccess() {
-        // Some head-unit firmwares hide this screen; fall back to app info.
-        if (!tryStart(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))) {
-            openAppInfo(getPackageName());
-        }
-    }
-
-    private void setupMedia() {
-        if (sessionListenerRegistered) return;
-        if (!hasNotificationAccess()) { showMediaIdle(); return; }
-        sessionManager = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
-        ComponentName cn = new ComponentName(this, MediaListener.class);
-        try {
-            sessionManager.addOnActiveSessionsChangedListener(sessionsListener, cn, ui);
-            sessionListenerRegistered = true;
-            sessionsListener.onActiveSessionsChanged(sessionManager.getActiveSessions(cn));
-        } catch (SecurityException ex) {
-            showMediaIdle();
-        }
-    }
-
-    private final MediaSessionManager.OnActiveSessionsChangedListener sessionsListener =
-            new MediaSessionManager.OnActiveSessionsChangedListener() {
-                @Override public void onActiveSessionsChanged(List<MediaController> list) {
-                    watchSessions(list);
-                    pickController();
-                }
-            };
-
-    /**
-     * Registered on EVERY media session, not just the shown one. Head units often keep their own
-     * player (radio, USB music, Bluetooth) as a paused session; without this, a song started later
-     * in YouTube Music/Spotify wouldn't show until the session list itself changed.
-     */
-    private final MediaController.Callback sessionCallback = new MediaController.Callback() {
-        @Override public void onPlaybackStateChanged(PlaybackState state) { pickController(); }
-        @Override public void onMetadataChanged(MediaMetadata metadata) { renderMedia(); }
-        @Override public void onSessionDestroyed() { pickController(); }
-    };
-
-    private final List<MediaController> sessions = new ArrayList<>();
-
-    private void watchSessions(List<MediaController> list) {
-        for (MediaController c : sessions) c.unregisterCallback(sessionCallback);
-        sessions.clear();
-        if (list != null) sessions.addAll(list);
-        for (MediaController c : sessions) c.registerCallback(sessionCallback, ui);
-    }
-
-    /** Show the session that's playing; otherwise keep the current one; otherwise the most recent. */
-    private void pickController() {
-        MediaController pick = null, current = null;
-        for (MediaController c : sessions) {
-            if (pick == null && isPlaying(c)) pick = c;
-            if (controller != null && c.getSessionToken().equals(controller.getSessionToken())) current = c;
-        }
-        if (pick == null) pick = current != null ? current : (sessions.isEmpty() ? null : sessions.get(0));
-        controller = pick;
-        renderMedia();
-    }
-
-    private static boolean isPlaying(MediaController c) {
-        PlaybackState s = c.getPlaybackState();
-        return s != null && (s.getState() == PlaybackState.STATE_PLAYING
-                || s.getState() == PlaybackState.STATE_BUFFERING);
-    }
-
-    /** Tints the now-playing card and play button with the album's colour; 0 restores the default. */
-    private void applyMediaTint(int color) {
-        if (color == mediaTint) return;
-        mediaTint = color;
-        if (color == 0) {
-            mediaCard.setBackground(Ui.panel(this, Ui.CARD, 18));
-            mediaPlay.setBackground(Ui.circleButton(this));
-            return;
-        }
-        GradientDrawable g = Ui.panel(this, Ui.mix(Ui.CARD, color, 0.32f), Ui.CARD, 18);
-        g.setOrientation(GradientDrawable.Orientation.LEFT_RIGHT);
-        mediaCard.setBackground(g);
-        int rgb = color & 0x00FFFFFF;
-        mediaPlay.setBackground(Ui.circleButton(this, rgb | 0x66000000, rgb | 0xAA000000));
-    }
-
-    private void showMediaIdle() {
-        if (mediaTitle == null) return;
-        applyMediaTint(0);
-        mediaArt.setImageResource(R.drawable.ic_music);
-        mediaArt.setPadding(Ui.dp(this, 18), Ui.dp(this, 18), Ui.dp(this, 18), Ui.dp(this, 18));
-        mediaPlay.setImageResource(R.drawable.ic_play);
-        if (!hasNotificationAccess()) {
-            mediaTitle.setText("Now playing is off");
-            mediaArtist.setText("Tap ⚙ → Enable now-playing controls");
-        } else {
-            mediaTitle.setText("Nothing playing");
-            mediaArtist.setText("Tap to open your music app");
-        }
-    }
-
-    private void renderMedia() {
-        if (controller == null) { showMediaIdle(); return; }
-        MediaMetadata md = controller.getMetadata();
-        String title = null, artist = null;
-        Bitmap art = null;
-        if (md != null) {
-            title = md.getString(MediaMetadata.METADATA_KEY_TITLE);
-            if (title == null) title = md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
-            artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
-            if (artist == null) artist = md.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE);
-            art = md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
-            if (art == null) art = md.getBitmap(MediaMetadata.METADATA_KEY_ART);
-            if (art == null) art = md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
-        }
-        mediaTitle.setText(title != null ? title : appLabel(controller.getPackageName()));
-        mediaArtist.setText(artist != null ? artist : "");
-        applyMediaTint(art != null ? Ui.dominantColor(art) : 0);
-        if (art != null) {
-            mediaArt.setPadding(0, 0, 0, 0);
-            mediaArt.setImageBitmap(art);
-        } else {
-            mediaArt.setImageResource(R.drawable.ic_music);
-            int p = Ui.dp(this, 18);
-            mediaArt.setPadding(p, p, p, p);
-        }
-        mediaPlay.setImageResource(isPlaying(controller) ? R.drawable.ic_pause : R.drawable.ic_play);
-    }
-
-    private String appLabel(String pkg) {
-        try {
-            return pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString();
-        } catch (PackageManager.NameNotFoundException e) {
-            return pkg;
-        }
-    }
-
-    private void openMediaApp() {
-        if (!hasNotificationAccess()) { openNotificationAccess(); return; }
-        if (controller != null) {
-            PendingIntent pi = controller.getSessionActivity();
-            if (pi != null) {
-                try { pi.send(); return; } catch (PendingIntent.CanceledException ignored) {}
-            }
-            Intent li = pm.getLaunchIntentForPackage(controller.getPackageName());
-            if (li != null && tryStart(li)) return;
-        }
-        // nothing playing: open the first pinned music-ish app
-        for (String k : loadPins()) {
-            AppEntry e = appsByKey.get(k);
-            if (e == null) continue;
-            String pkg = e.component.getPackageName();
-            if (pkg.contains("music") || pkg.contains("spotify") || pkg.contains("youtube")) {
-                launch(e);
-                return;
-            }
-        }
-        showDrawer(true);
     }
 }

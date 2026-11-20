@@ -16,12 +16,11 @@ import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Big, touch-friendly app tiles. Used for both the home grid and the app drawer. */
+/** Big, touch-friendly app tiles for the app drawer. (Home tiles are built by MainActivity.appTile.) */
 final class AppAdapter extends BaseAdapter {
     private final Context ctx;
     private final int iconPx, tileHeightPx;
     private final float labelSp;
-    private final boolean cardBackground;
     private final List<AppEntry> items = new ArrayList<>();
     private boolean simpleIcons = true;
 
@@ -30,12 +29,11 @@ final class AppAdapter extends BaseAdapter {
         notifyDataSetChanged();
     }
 
-    AppAdapter(Context ctx, int iconPx, int tileHeightPx, float labelSp, boolean cardBackground) {
+    AppAdapter(Context ctx, int iconPx, int tileHeightPx, float labelSp) {
         this.ctx = ctx;
         this.iconPx = iconPx;
         this.tileHeightPx = tileHeightPx;
         this.labelSp = labelSp;
-        this.cardBackground = cardBackground;
     }
 
     void setItems(List<AppEntry> list) {
@@ -59,7 +57,7 @@ final class AppAdapter extends BaseAdapter {
                     ViewGroup.LayoutParams.MATCH_PARENT, tileHeightPx));
             int pad = Ui.dp(ctx, 8);
             tile.setPadding(pad, pad, pad, pad);
-            tile.setBackground(cardBackground ? Ui.tileBackground(ctx) : Ui.pressOnlyBackground(ctx));
+            tile.setBackground(Ui.pressOnlyBackground(ctx));
 
             ImageView icon = new ImageView(ctx);
             icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -85,7 +83,7 @@ final class AppAdapter extends BaseAdapter {
             h = (Holder) convertView.getTag();
         }
         AppEntry e = items.get(position);
-        h.icon.setImageDrawable(e.displayIcon(ctx, simpleIcons, cardBackground));
+        h.icon.setImageDrawable(e.displayIcon(ctx, simpleIcons, false));
         h.label.setText(e.label);
         return convertView;
     }

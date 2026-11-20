@@ -1,6 +1,10 @@
 package id.rsusanto.carhome;
 
+import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
@@ -8,21 +12,108 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.net.Uri;
+import android.provider.Settings;
 import android.util.DisplayMetrics;
+import android.util.TypedValue;
+import android.widget.ImageButton;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import java.util.ArrayList;
+import java.util.List;
 
 final class Ui {
     static final int BG = 0xFF0E1116;
     static final int CARD = 0xFF1B2029;
     static final int PANEL = 0xFF141820;
     static final int CARD_PRESSED = 0xFF2A3240;
+    static final int ART_BG = 0xFF262D38;     // album-art placeholder
+    static final int OUTLINE = 0xFF3A4556;    // dashed empty tile, its plus sign
     static final int ACCENT = 0xFF4FC3F7;
     static final int TEXT_DIM = 0xFF9AA4B2;
+    static final int TEXT_FAINT = 0xFF6B7585; // small hints
+    static final int DIALOG_THEME = android.R.style.Theme_DeviceDefault_Dialog_Alert;
 
     private Ui() {}
 
     static int dp(Context c, float v) {
         return Math.round(v * c.getResources().getDisplayMetrics().density);
     }
+
+    // ---------------------------------------------------------------- views
+
+    static TextView text(Context c, String s, float sp, int color) {
+        TextView t = new TextView(c);
+        t.setText(s);
+        t.setTextColor(color);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        return t;
+    }
+
+    /** Square icon button with a press highlight. {@code label} is read out by TalkBack. */
+    static ImageButton iconButton(Context c, int res, int sizeDp, int padDp, String label) {
+        ImageButton b = new ImageButton(c);
+        b.setImageResource(res);
+        b.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        b.setBackground(pressOnlyBackground(c));
+        b.setContentDescription(label);
+        int p = dp(c, padDp);
+        b.setPadding(p, p, p, p);
+        int s = dp(c, sizeDp);
+        b.setLayoutParams(new LinearLayout.LayoutParams(s, s));
+        return b;
+    }
+
+    static AlertDialog.Builder dialog(Context c) {
+        return new AlertDialog.Builder(c, DIALOG_THEME);
+    }
+
+    /** A pick-one list dialog where each label carries its own action, so they can't get out of step. */
+    static final class Menu {
+        private final List<String> labels = new ArrayList<>();
+        private final List<Runnable> actions = new ArrayList<>();
+
+        Menu add(String label, Runnable action) {
+            labels.add(label);
+            actions.add(action);
+            return this;
+        }
+
+        void show(Context c, String title) {
+            dialog(c).setTitle(title)
+                    .setItems(labels.toArray(new String[0]), new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int which) { actions.get(which).run(); }
+                    })
+                    .show();
+        }
+    }
+
+    // ---------------------------------------------------------------- intents
+
+    static void toast(Context c, String s) {
+        Toast.makeText(c, s, Toast.LENGTH_SHORT).show();
+    }
+
+    /** Starts an activity, or says it isn't available on this unit. */
+    static boolean tryStart(Context c, Intent i) {
+        try {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            c.startActivity(i);
+            return true;
+        } catch (ActivityNotFoundException | SecurityException ex) {
+            toast(c, "Not available on this device");
+            return false;
+        }
+    }
+
+    static void openAppInfo(Context c, String pkg) {
+        tryStart(c, new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg)));
+    }
+
+    // ---------------------------------------------------------------- drawables
 
     static GradientDrawable rounded(Context c, int color, float radiusDp) {
         GradientDrawable g = new GradientDrawable();

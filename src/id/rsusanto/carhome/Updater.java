@@ -1,7 +1,6 @@
 package id.rsusanto.carhome;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
@@ -38,7 +37,6 @@ final class Updater {
     /** Must match build.sh: versionCode = 100 + commit count, versionName = base.<commit count>. */
     private static final int VERSION_CODE_BASE = 100;
     static final String APK_FILE = "CarHome-update.apk";
-    private static final int THEME = android.R.style.Theme_DeviceDefault_Dialog_Alert;
 
     private final Activity act;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -85,7 +83,7 @@ final class Updater {
     void check() {
         cancelled = false;
         apkFile(act).delete(); // left over from an earlier update
-        final ProgressDialog wait = new ProgressDialog(act, THEME);
+        final ProgressDialog wait = new ProgressDialog(act, Ui.DIALOG_THEME);
         wait.setMessage("Checking for updates…");
         wait.setCancelable(true);
         wait.setOnCancelListener(new DialogInterface.OnCancelListener() {
@@ -170,7 +168,7 @@ final class Updater {
             return;
         }
         String size = r.size > 0 ? "\n\nDownload size: " + Math.max(1, r.size / 1024) + " KB" : "";
-        new AlertDialog.Builder(act, THEME)
+        Ui.dialog(act)
                 .setTitle("Update available")
                 .setMessage("CarHome " + r.name + " is available.\nYou have " + have + "." + size)
                 .setPositiveButton("Download & install", new DialogInterface.OnClickListener() {
@@ -184,7 +182,7 @@ final class Updater {
 
     private void download(final Release r) {
         cancelled = false;
-        final ProgressDialog bar = new ProgressDialog(act, THEME);
+        final ProgressDialog bar = new ProgressDialog(act, Ui.DIALOG_THEME);
         bar.setTitle("Downloading CarHome " + r.name);
         bar.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
         bar.setProgressNumberFormat(null);
@@ -298,7 +296,7 @@ final class Updater {
     // ---------------------------------------------------------------- helpers
 
     private void message(String title, String text) {
-        new AlertDialog.Builder(act, THEME)
+        Ui.dialog(act)
                 .setTitle(title)
                 .setMessage(text)
                 .setPositiveButton("OK", null)

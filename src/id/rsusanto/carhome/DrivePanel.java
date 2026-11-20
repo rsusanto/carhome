@@ -2,13 +2,13 @@ package id.rsusanto.carhome;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -20,14 +20,13 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.text.InputType;
 import android.text.TextUtils;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
-import android.widget.Toast;
 
 /**
  * Left panel: GPS speed + heading, and three one-tap Google Maps destinations.
@@ -56,6 +55,8 @@ final class DrivePanel implements LocationListener {
     };
     private static final int ICONS_PER_ROW = 6;
     private static final long STALE_MS = 6000;
+    private static final String K_NAME = "place_name_", K_ADDR = "place_addr_", K_ICON = "place_icon_";
+    private static final String K_ASKED_LOCATION = "asked_location";
 
     private final Activity act;
     private final SharedPreferences prefs;
@@ -63,12 +64,12 @@ final class DrivePanel implements LocationListener {
     private LocationManager lm;
     private boolean listening;
     private long lastFixAt;
+    private boolean providerOff; // GPS switched off in Android settings
 
     private SpeedGauge speed;
     private TextView status;
     private final TextView[] placeLabels = new TextView[PLACES];
     private final ImageView[] placeIcons = new ImageView[PLACES];
-    View root;
 
     DrivePanel(Activity act, SharedPreferences prefs) {
         this.act = act;
@@ -93,7 +94,7 @@ final class DrivePanel implements LocationListener {
         speed.setSpeed(-1);
         speedBlock.addView(speed, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        status = text("Waiting for GPS…", 15, Ui.TEXT_DIM);
+        status = Ui.text(act, "Waiting for GPS…", 15, Ui.TEXT_DIM);
         status.setGravity(Gravity.CENTER_HORIZONTAL);
         speedBlock.addView(status, new LinearLayout.LayoutParams(-1, -2));
 
@@ -103,13 +104,12 @@ final class DrivePanel implements LocationListener {
             lp.topMargin = Ui.dp(act, i == 0 ? 22 : 10);
             v.addView(placeButton(i), lp);
         }
-        TextView hint = text("Long-press a place to change it", 12, 0xFF6B7585);
+        TextView hint = Ui.text(act, "Long-press a place to change it", 12, Ui.TEXT_FAINT);
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-2, -2);
         hlp.topMargin = Ui.dp(act, 10);
         v.addView(hint, hlp);
 
         refreshPlaces();
-        root = v;
         return v;
     }
 
@@ -126,7 +126,7 @@ final class DrivePanel implements LocationListener {
         b.addView(icon, new LinearLayout.LayoutParams(s, s));
         placeIcons[i] = icon;
 
-        TextView label = text("", 17, Color.WHITE);
+        TextView label = Ui.text(act, "", 17, Color.WHITE);
         label.setSingleLine(true);
         label.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(0, -2, 1f);
@@ -145,20 +145,13 @@ final class DrivePanel implements LocationListener {
         return b;
     }
 
-    private TextView text(String s, float sp, int color) {
-        TextView t = new TextView(act);
-        t.setText(s);
-        t.setTextColor(color);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-        return t;
-    }
-
     // ---------------------------------------------------------------- places
 
-    private String name(int i) { return prefs.getString("place_name_" + i, DEFAULT_NAMES[i]); }
-    private String address(int i) { return prefs.getString("place_addr_" + i, ""); }
+    private static String key(String prefix, int i) { return prefix + i; }
+    private String name(int i) { return prefs.getString(key(K_NAME, i), DEFAULT_NAMES[i]); }
+    private String address(int i) { return prefs.getString(key(K_ADDR, i), ""); }
     private int iconIndex(int i) {
-        int v = prefs.getInt("place_icon_" + i, i); // defaults: home, school, briefcase
+        int v = prefs.getInt(key(K_ICON, i), i); // defaults: home, school, briefcase
         return v >= 0 && v < ICONS.length ? v : i;
     }
 
@@ -190,7 +183,7 @@ final class DrivePanel implements LocationListener {
                 act.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + q))
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             } catch (Exception e2) {
-                Toast.makeText(act, "No maps app installed", Toast.LENGTH_SHORT).show();
+                Ui.toast(act, "No maps app installed");
             }
         }
     }
@@ -214,7 +207,7 @@ final class DrivePanel implements LocationListener {
         form.addView(addrIn);
 
         // icon picker
-        TextView pickCap = text("Icon", 14, Ui.TEXT_DIM);
+        TextView pickCap = Ui.text(act, "Icon", 14, Ui.TEXT_DIM);
         LinearLayout.LayoutParams pcl = new LinearLayout.LayoutParams(-2, -2);
         pcl.topMargin = Ui.dp(act, 14);
         form.addView(pickCap, pcl);
@@ -246,24 +239,24 @@ final class DrivePanel implements LocationListener {
             cells[k] = cell;
         }
 
-        new AlertDialog.Builder(act, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        Ui.dialog(act)
                 .setTitle("Saved place")
                 .setView(scroll(form))
                 .setPositiveButton("Save", new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         String n = nameIn.getText().toString().trim();
                         prefs.edit()
-                                .putString("place_name_" + i, n.isEmpty() ? DEFAULT_NAMES[i] : n)
-                                .putString("place_addr_" + i, addrIn.getText().toString().trim())
-                                .putInt("place_icon_" + i, chosen[0])
+                                .putString(key(K_NAME, i), n.isEmpty() ? DEFAULT_NAMES[i] : n)
+                                .putString(key(K_ADDR, i), addrIn.getText().toString().trim())
+                                .putInt(key(K_ICON, i), chosen[0])
                                 .apply();
                         refreshPlaces();
                     }
                 })
                 .setNeutralButton("Clear", new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
-                        prefs.edit().remove("place_name_" + i).remove("place_addr_" + i)
-                                .remove("place_icon_" + i).apply();
+                        prefs.edit().remove(key(K_NAME, i)).remove(key(K_ADDR, i))
+                                .remove(key(K_ICON, i)).apply();
                         refreshPlaces();
                     }
                 })
@@ -273,13 +266,13 @@ final class DrivePanel implements LocationListener {
 
     /** Short head-unit screens: keep the dialog scrollable. */
     private View scroll(View content) {
-        android.widget.ScrollView sv = new android.widget.ScrollView(act);
+        ScrollView sv = new ScrollView(act);
         sv.addView(content);
         return sv;
     }
 
     private Drawable pickBg(boolean selected) {
-        android.graphics.drawable.GradientDrawable g = Ui.rounded(act, selected ? 0xFF2A3240 : 0x00000000, 12);
+        GradientDrawable g = Ui.rounded(act, selected ? Ui.CARD_PRESSED : 0x00000000, 12);
         if (selected) g.setStroke(Ui.dp(act, 2), Ui.ACCENT);
         return g;
     }
@@ -295,15 +288,12 @@ final class DrivePanel implements LocationListener {
     void start() {
         if (!hasPermission()) {
             status.setText("Location permission needed");
-            if (!prefs.getBoolean("asked_location", false) && Build.VERSION.SDK_INT >= 23) {
-                prefs.edit().putBoolean("asked_location", true).apply();
-                act.requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
+            if (!prefs.getBoolean(K_ASKED_LOCATION, false)) {
+                prefs.edit().putBoolean(K_ASKED_LOCATION, true).apply();
+                askLocation();
             }
             status.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) {
-                    if (Build.VERSION.SDK_INT >= 23 && !hasPermission())
-                        act.requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
-                }
+                @Override public void onClick(View v) { if (!hasPermission()) askLocation(); }
             });
             return;
         }
@@ -320,6 +310,11 @@ final class DrivePanel implements LocationListener {
         }
     }
 
+    private void askLocation() {
+        if (Build.VERSION.SDK_INT >= 23)
+            act.requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
+    }
+
     /** Call from onPause — no GPS work while an app is in front of the launcher. */
     void stop() {
         ui.removeCallbacks(staleCheck);
@@ -331,7 +326,7 @@ final class DrivePanel implements LocationListener {
 
     private final Runnable staleCheck = new Runnable() {
         @Override public void run() {
-            if (SystemClock.elapsedRealtime() - lastFixAt > STALE_MS) {
+            if (!providerOff && SystemClock.elapsedRealtime() - lastFixAt > STALE_MS) {
                 speed.setSpeed(-1);
                 status.setText(lastFixAt == 0 ? "Waiting for GPS…" : "GPS signal lost");
             }
@@ -342,6 +337,7 @@ final class DrivePanel implements LocationListener {
     @Override
     public void onLocationChanged(Location loc) {
         lastFixAt = SystemClock.elapsedRealtime();
+        providerOff = false;
         float kmh = loc.hasSpeed() ? loc.getSpeed() * 3.6f : 0f;
         if (kmh < 2f) kmh = 0f; // GPS jitter while parked
         speed.setSpeed(kmh);
@@ -358,6 +354,15 @@ final class DrivePanel implements LocationListener {
     }
 
     @Override public void onStatusChanged(String p, int s, Bundle b) {}
-    @Override public void onProviderEnabled(String p) {}
-    @Override public void onProviderDisabled(String p) { status.setText("GPS is turned off"); }
+    @Override public void onProviderEnabled(String p) {
+        providerOff = false;
+        status.setText("Waiting for GPS…");
+    }
+
+    @Override public void onProviderDisabled(String p) {
+        // staleCheck leaves this message alone until GPS is back
+        providerOff = true;
+        speed.setSpeed(-1);
+        status.setText("GPS is turned off");
+    }
 }

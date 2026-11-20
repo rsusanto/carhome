@@ -47,7 +47,7 @@ final class SquareGrid extends ViewGroup {
 
     @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
-        int gridW = cell * COLS + gap * (COLS - 1);
+        int gridW = widthForCell(cell, gap);
         int x0 = (r - l - gridW) / 2; // center horizontally if height was the limit
         for (int i = 0; i < getChildCount() && i < COLS * ROWS; i++) {
             View v = getChildAt(i);

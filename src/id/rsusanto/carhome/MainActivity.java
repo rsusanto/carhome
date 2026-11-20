@@ -178,7 +178,7 @@ public class MainActivity extends Activity {
         if (sessionListenerRegistered) {
             sessionManager.removeOnActiveSessionsChangedListener(sessionsListener);
         }
-        if (controller != null) controller.unregisterCallback(controllerCallback);
+        watchSessions(null);
         bg.shutdownNow();
         super.onDestroy();
     }
@@ -542,7 +542,8 @@ public class MainActivity extends Activity {
     private View buildDrawer() {
         LinearLayout d = new LinearLayout(this);
         d.setOrientation(LinearLayout.VERTICAL);
-        d.setBackgroundColor(0xF20E1116);
+        // No background of its own: the home screen is hidden while the drawer is open, so the
+        // drawer sits on the same glowing background (and status bar) as home, with no seam.
         int pad = Ui.dp(this, 20);
         d.setPadding(pad, pad, pad, 0);
         d.setVisibility(View.GONE);
@@ -714,6 +715,7 @@ public class MainActivity extends Activity {
 
     private void showDrawer(boolean show) {
         drawer.setVisibility(show ? View.VISIBLE : View.GONE);
+        home.setVisibility(show ? View.INVISIBLE : View.VISIBLE);
     }
 
     // ---------------------------------------------------------------- apps
@@ -1002,25 +1004,40 @@ public class MainActivity extends Activity {
     private final MediaSessionManager.OnActiveSessionsChangedListener sessionsListener =
             new MediaSessionManager.OnActiveSessionsChangedListener() {
                 @Override public void onActiveSessionsChanged(List<MediaController> list) {
-                    MediaController pick = null;
-                    if (list != null) {
-                        for (MediaController c : list) if (isPlaying(c)) { pick = c; break; }
-                        if (pick == null && !list.isEmpty()) pick = list.get(0);
-                    }
-                    bindController(pick);
+                    watchSessions(list);
+                    pickController();
                 }
             };
 
-    private final MediaController.Callback controllerCallback = new MediaController.Callback() {
-        @Override public void onPlaybackStateChanged(PlaybackState state) { renderMedia(); }
+    /**
+     * Registered on EVERY media session, not just the shown one. Head units often keep their own
+     * player (radio, USB music, Bluetooth) as a paused session; without this, a song started later
+     * in YouTube Music/Spotify wouldn't show until the session list itself changed.
+     */
+    private final MediaController.Callback sessionCallback = new MediaController.Callback() {
+        @Override public void onPlaybackStateChanged(PlaybackState state) { pickController(); }
         @Override public void onMetadataChanged(MediaMetadata metadata) { renderMedia(); }
-        @Override public void onSessionDestroyed() { bindController(null); }
+        @Override public void onSessionDestroyed() { pickController(); }
     };
 
-    private void bindController(MediaController c) {
-        if (controller != null) controller.unregisterCallback(controllerCallback);
-        controller = c;
-        if (controller != null) controller.registerCallback(controllerCallback, ui);
+    private final List<MediaController> sessions = new ArrayList<>();
+
+    private void watchSessions(List<MediaController> list) {
+        for (MediaController c : sessions) c.unregisterCallback(sessionCallback);
+        sessions.clear();
+        if (list != null) sessions.addAll(list);
+        for (MediaController c : sessions) c.registerCallback(sessionCallback, ui);
+    }
+
+    /** Show the session that's playing; otherwise keep the current one; otherwise the most recent. */
+    private void pickController() {
+        MediaController pick = null, current = null;
+        for (MediaController c : sessions) {
+            if (pick == null && isPlaying(c)) pick = c;
+            if (controller != null && c.getSessionToken().equals(controller.getSessionToken())) current = c;
+        }
+        if (pick == null) pick = current != null ? current : (sessions.isEmpty() ? null : sessions.get(0));
+        controller = pick;
         renderMedia();
     }
 

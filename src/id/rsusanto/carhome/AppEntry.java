@@ -9,7 +9,11 @@ final class AppEntry {
 
     final ComponentName component; // null for the "All apps" tile
     final String label;
-    final Drawable icon;           // the app's own icon
+    /**
+     * The app's own icon, or null while simple icons are on: then it isn't loaded at all, since a
+     * launcher icon per installed app adds up to several MB that would never be drawn.
+     */
+    final Drawable icon;
 
     private Drawable simpleColored, simpleDark; // created on demand
 
@@ -28,7 +32,7 @@ final class AppEntry {
     }
 
     Drawable displayIcon(Context c, boolean simple, boolean colored) {
-        if (!simple || isAllApps()) return icon;
+        if (isAllApps() || (!simple && icon != null)) return icon;
         if (colored) {
             if (simpleColored == null)
                 simpleColored = SimpleIcons.forApp(c, component.getPackageName(), label, true);

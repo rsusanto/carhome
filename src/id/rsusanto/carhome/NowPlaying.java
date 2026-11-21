@@ -42,6 +42,7 @@ final class NowPlaying {
     private MediaController controller;
     private boolean listenerRegistered;
     private final List<MediaController> sessions = new ArrayList<>();
+    private final List<SessionWatch> watches = new ArrayList<>();
 
     private LinearLayout card;
     private ImageView art;
@@ -49,6 +50,7 @@ final class NowPlaying {
     private ImageButton play;
     private int tint = -1;       // album-art colour on the card (0 = default theme)
     private String artKey;       // what the art/tint currently show, to skip redoing them
+    private int playIcon;        // drawable the play button shows now (0 = not set yet)
 
     NowPlaying(Activity act, Runnable openFallback) {
         this.act = act;
@@ -188,18 +190,32 @@ final class NowPlaying {
      * Registered on EVERY media session, not just the shown one. Head units often keep their own
      * player (radio, USB music, Bluetooth) as a paused session; without this, a song started later
      * in YouTube Music/Spotify wouldn't show until the session list itself changed.
+     * One per session, so metadata (with its album art) from a session that isn't shown is ignored.
      */
-    private final MediaController.Callback sessionCallback = new MediaController.Callback() {
+    private final class SessionWatch extends MediaController.Callback {
+        final MediaController session;
+
+        SessionWatch(MediaController session) { this.session = session; }
+
         @Override public void onPlaybackStateChanged(PlaybackState state) { pick(); }
-        @Override public void onMetadataChanged(MediaMetadata metadata) { render(); }
+        @Override public void onMetadataChanged(MediaMetadata metadata) { if (isShown(session)) render(metadata); }
         @Override public void onSessionDestroyed() { pick(); }
-    };
+    }
 
     private void watch(List<MediaController> list) {
-        for (MediaController c : sessions) c.unregisterCallback(sessionCallback);
+        for (SessionWatch w : watches) w.session.unregisterCallback(w);
+        watches.clear();
         sessions.clear();
         if (list != null) sessions.addAll(list);
-        for (MediaController c : sessions) c.registerCallback(sessionCallback, ui);
+        for (MediaController c : sessions) {
+            SessionWatch w = new SessionWatch(c);
+            c.registerCallback(w, ui);
+            watches.add(w);
+        }
+    }
+
+    private boolean isShown(MediaController c) {
+        return controller != null && c.getSessionToken().equals(controller.getSessionToken());
     }
 
     /**
@@ -210,7 +226,7 @@ final class NowPlaying {
         MediaController pick = null, current = null;
         for (MediaController c : sessions) {
             if (pick == null && isPlaying(c)) pick = c;
-            if (controller != null && c.getSessionToken().equals(controller.getSessionToken())) current = c;
+            if (isShown(c)) current = c;
         }
         if (pick == null) pick = current != null ? current : (sessions.isEmpty() ? null : sessions.get(0));
         boolean same = pick != null && current != null && pick == current;
@@ -228,7 +244,10 @@ final class NowPlaying {
 
     private void updatePlayIcon() {
         boolean playing = controller != null && isPlaying(controller);
-        play.setImageResource(playing ? R.drawable.ic_pause : R.drawable.ic_play);
+        int icon = playing ? R.drawable.ic_pause : R.drawable.ic_play;
+        if (icon == playIcon) return; // state updates are frequent; don't re-inflate the same icon
+        playIcon = icon;
+        play.setImageResource(icon);
         play.setContentDescription(playing ? "Pause" : "Play");
     }
 
@@ -246,8 +265,11 @@ final class NowPlaying {
     }
 
     private void render() {
+        render(controller == null ? null : controller.getMetadata());
+    }
+
+    private void render(MediaMetadata md) {
         if (controller == null) { showIdle(); return; }
-        MediaMetadata md = controller.getMetadata();
         String t = null, a = null;
         Bitmap cover = null;
         if (md != null) {
@@ -272,6 +294,7 @@ final class NowPlaying {
         if (key != null && key.equals(artKey)) return;
         artKey = key;
         if (cover != null) {
+            cover = fitArt(cover);
             art.setPadding(0, 0, 0, 0);
             art.setImageBitmap(cover);
         } else {
@@ -280,6 +303,19 @@ final class NowPlaying {
             art.setPadding(p, p, p, p);
         }
         applyTint(cover != null ? Ui.dominantColor(cover) : 0);
+    }
+
+    /**
+     * Covers often arrive at 500–1000+ px (1–4 MB each) for a 60 dp slot. Keep a copy just big
+     * enough for it (the slot crops to fill, so the short side matches); the full one can be freed.
+     */
+    private Bitmap fitArt(Bitmap cover) {
+        int target = Ui.dp(act, 60);
+        int shortSide = Math.min(cover.getWidth(), cover.getHeight());
+        if (shortSide <= target) return cover;
+        float scale = (float) target / shortSide;
+        return Bitmap.createScaledBitmap(cover, Math.max(1, Math.round(cover.getWidth() * scale)),
+                Math.max(1, Math.round(cover.getHeight() * scale)), true);
     }
 
     /** Tints the card and play button with the album's colour; 0 restores the default. */

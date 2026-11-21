@@ -4,6 +4,8 @@
 
 A small, dependency-free Android launcher for car head units (landscape, big touch targets, dark theme).
 
+> This is a vibe-coded app: it was written almost entirely by an AI coding assistant, with a human steering, testing on a real head unit, and reviewing.
+
 - Clock, date and now-playing controls (works with YouTube Music, Spotify, etc.)
 - 5 pinned apps + app drawer in square tiles, with simple line icons or the original ones
 - Drive panel: GPS speed and heading, and 3 one-tap Google Maps destinations with custom icons

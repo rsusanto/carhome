@@ -70,6 +70,13 @@ final class SpeedGauge extends View {
             invalidate();
             return;
         }
+        // Parked or cruising: fixes arrive every second with (almost) the same speed. Don't run a
+        // 600 ms animation of redraws that wouldn't change a pixel.
+        if (Math.abs(kmh - shown) < 0.5f) {
+            if (Math.round(kmh) != Math.round(shown)) invalidate();
+            shown = kmh;
+            return;
+        }
         anim = ValueAnimator.ofFloat(shown, kmh);
         anim.setDuration(600);
         anim.setInterpolator(new DecelerateInterpolator());

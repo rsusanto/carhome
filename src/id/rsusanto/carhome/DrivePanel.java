@@ -284,10 +284,10 @@ final class DrivePanel implements LocationListener {
                 || act.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
-    /** Call from onResume. Asks for permission once if needed. */
+    /** Call from onResume (and when the panel shows again). Asks for permission once if needed. */
     void start() {
         if (!hasPermission()) {
-            status.setText("Location permission needed");
+            setStatus("Location permission needed");
             if (!prefs.getBoolean(K_ASKED_LOCATION, false)) {
                 prefs.edit().putBoolean(K_ASKED_LOCATION, true).apply();
                 askLocation();
@@ -303,10 +303,10 @@ final class DrivePanel implements LocationListener {
         try {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0, this, Looper.getMainLooper());
             listening = true;
-            status.setText("Waiting for GPS…");
+            setStatus("Waiting for GPS…");
             ui.postDelayed(staleCheck, STALE_MS);
         } catch (Exception e) { // SecurityException, or no GPS provider
-            status.setText("GPS not available");
+            setStatus("GPS not available");
         }
     }
 
@@ -315,7 +315,7 @@ final class DrivePanel implements LocationListener {
             act.requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
     }
 
-    /** Call from onPause — no GPS work while an app is in front of the launcher. */
+    /** Call from onPause, and while the panel is hidden — no GPS work when nobody sees the speed. */
     void stop() {
         ui.removeCallbacks(staleCheck);
         if (listening && lm != null) {
@@ -328,7 +328,7 @@ final class DrivePanel implements LocationListener {
         @Override public void run() {
             if (!providerOff && SystemClock.elapsedRealtime() - lastFixAt > STALE_MS) {
                 speed.setSpeed(-1);
-                status.setText(lastFixAt == 0 ? "Waiting for GPS…" : "GPS signal lost");
+                setStatus(lastFixAt == 0 ? "Waiting for GPS…" : "GPS signal lost");
             }
             ui.postDelayed(this, 2000);
         }
@@ -342,10 +342,15 @@ final class DrivePanel implements LocationListener {
         if (kmh < 2f) kmh = 0f; // GPS jitter while parked
         speed.setSpeed(kmh);
         if (loc.hasBearing() && kmh >= 5f) {
-            status.setText("Heading " + compass(loc.getBearing()));
+            setStatus("Heading " + compass(loc.getBearing()));
         } else {
-            status.setText(kmh == 0f ? "Stopped" : "GPS ok");
+            setStatus(kmh == 0f ? "Stopped" : "GPS ok");
         }
+    }
+
+    /** Fixes arrive every second, usually with the same message: skip the redundant relayout. */
+    private void setStatus(String s) {
+        if (!TextUtils.equals(s, status.getText())) status.setText(s);
     }
 
     private static String compass(float deg) {
@@ -356,13 +361,13 @@ final class DrivePanel implements LocationListener {
     @Override public void onStatusChanged(String p, int s, Bundle b) {}
     @Override public void onProviderEnabled(String p) {
         providerOff = false;
-        status.setText("Waiting for GPS…");
+        setStatus("Waiting for GPS…");
     }
 
     @Override public void onProviderDisabled(String p) {
         // staleCheck leaves this message alone until GPS is back
         providerOff = true;
         speed.setSpeed(-1);
-        status.setText("GPS is turned off");
+        setStatus("GPS is turned off");
     }
 }

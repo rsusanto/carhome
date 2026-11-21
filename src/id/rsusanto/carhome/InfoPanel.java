@@ -23,7 +23,7 @@ final class InfoPanel {
     private final Executor bg;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private boolean running;
-    private String cpu; // read once: it doesn't change
+    private String cpu, screenSize; // read once: they don't change
 
     private TextView screen, cpuText, ram, storage, net, temp, android;
     private LinearLayout ramBar, storageBar;
@@ -115,8 +115,9 @@ final class InfoPanel {
     private final Runnable read = new Runnable() {
         @Override public void run() {
             if (cpu == null) cpu = SystemInfo.cpu();
+            if (screenSize == null) screenSize = SystemInfo.screen(ctx);
             final Reading r = new Reading();
-            r.screen = SystemInfo.screen(ctx);
+            r.screen = screenSize;
             r.cpu = cpu;
             long[] m = SystemInfo.ram(ctx);
             r.ram = SystemInfo.gb(m[0]) + " free of " + SystemInfo.gb(m[1]);

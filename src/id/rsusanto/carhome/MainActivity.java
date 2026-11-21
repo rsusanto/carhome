@@ -127,8 +127,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         nowPlaying.resume();
-        drivePanel.start();
-        if (infoView.getVisibility() == View.VISIBLE) infoPanel.start();
+        // Only the face of the left panel that's showing does any work (GPS, or the info readings).
+        if (infoView.getVisibility() == View.VISIBLE) infoPanel.start(); else drivePanel.start();
     }
 
     @Override
@@ -140,7 +140,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
-        if (code == DrivePanel.REQ_LOCATION) drivePanel.start();
+        if (code == DrivePanel.REQ_LOCATION && carView.getVisibility() == View.VISIBLE) drivePanel.start();
     }
 
     @Override
@@ -300,7 +300,13 @@ public class MainActivity extends Activity {
         infoView.setVisibility(show ? View.VISIBLE : View.GONE);
         carView.setVisibility(show ? View.GONE : View.VISIBLE);
         prefs.edit().putBoolean(KEY_SHOW_INFO, show).apply();
-        if (show) infoPanel.start(); else infoPanel.stop();
+        if (show) {
+            drivePanel.stop();
+            infoPanel.start();
+        } else {
+            infoPanel.stop();
+            drivePanel.start();
+        }
     }
 
     // ---- home tiles
@@ -507,7 +513,9 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- apps
 
+    /** Lists launchable apps off the UI thread. Their own icons are only loaded when they're shown. */
     private void loadApps() {
+        final boolean withIcons = !simpleIcons();
         bg.execute(new Runnable() {
             @Override public void run() {
                 Intent i = new Intent(Intent.ACTION_MAIN);
@@ -520,7 +528,7 @@ public class MainActivity extends Activity {
                     ComponentName cn = new ComponentName(ri.activityInfo.packageName, ri.activityInfo.name);
                     CharSequence label = ri.loadLabel(pm);
                     list.add(new AppEntry(cn, label == null ? cn.getPackageName() : label.toString(),
-                            ri.loadIcon(pm)));
+                            withIcons ? ri.loadIcon(pm) : null));
                 }
                 final Collator col = Collator.getInstance();
                 Collections.sort(list, new Comparator<AppEntry>() {
@@ -709,6 +717,7 @@ public class MainActivity extends Activity {
                             @Override public void run() {
                                 prefs.edit().putBoolean(KEY_SIMPLE_ICONS, !simple).apply();
                                 applyIconStyle();
+                                loadApps(); // loads the original icons, or lets them go
                             }
                         })
                 .add("Android settings", new Runnable() {

@@ -712,6 +712,9 @@ public class MainActivity extends Activity {
                 .add("Enable now-playing controls", new Runnable() {
                     @Override public void run() { nowPlaying.openAccessSettings(); }
                 })
+                .add("Media sources (why a player doesn't show)", new Runnable() {
+                    @Override public void run() { nowPlaying.showSources(); }
+                })
                 .add(simple ? "Icons: simple (switch to original)" : "Icons: original (switch to simple)",
                         new Runnable() {
                             @Override public void run() {

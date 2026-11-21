@@ -1,22 +1,27 @@
 package id.rsusanto.carhome;
 
 import android.app.Activity;
+import android.app.Notification;
 import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.service.notification.StatusBarNotification;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -198,7 +203,10 @@ final class NowPlaying {
         SessionWatch(MediaController session) { this.session = session; }
 
         @Override public void onPlaybackStateChanged(PlaybackState state) { pick(); }
-        @Override public void onMetadataChanged(MediaMetadata metadata) { if (isShown(session)) render(metadata); }
+        @Override public void onMetadataChanged(MediaMetadata metadata) {
+            if (isShown(session)) render(metadata);
+            else if (controller == null) pick(); // nothing shown yet: this one may have info now
+        }
         @Override public void onSessionDestroyed() { pick(); }
     }
 
@@ -220,6 +228,8 @@ final class NowPlaying {
 
     /**
      * Show the session that's playing; otherwise keep the current one; otherwise the most recent.
+     * A paused session with no track info (like the head unit's Bluetooth player right after boot)
+     * isn't worth showing: the card stays on "Nothing playing" until something plays.
      * If the shown session stays the same, only the play/pause icon needs updating.
      */
     private void pick() {
@@ -228,8 +238,11 @@ final class NowPlaying {
             if (pick == null && isPlaying(c)) pick = c;
             if (isShown(c)) current = c;
         }
-        if (pick == null) pick = current != null ? current : (sessions.isEmpty() ? null : sessions.get(0));
-        boolean same = pick != null && current != null && pick == current;
+        if (pick == null && current != null && hasInfo(current)) pick = current;
+        if (pick == null) {
+            for (MediaController c : sessions) if (hasInfo(c)) { pick = c; break; }
+        }
+        boolean same = pick != null && pick == current;
         controller = pick;
         if (same) updatePlayIcon(); else render();
     }
@@ -238,6 +251,13 @@ final class NowPlaying {
         PlaybackState s = c.getPlaybackState();
         return s != null && (s.getState() == PlaybackState.STATE_PLAYING
                 || s.getState() == PlaybackState.STATE_BUFFERING);
+    }
+
+    /** True if the session says what it's playing (a title), so there's something to show. */
+    private static boolean hasInfo(MediaController c) {
+        MediaMetadata md = c.getMetadata();
+        return md != null && (!TextUtils.isEmpty(md.getString(MediaMetadata.METADATA_KEY_TITLE))
+                || !TextUtils.isEmpty(md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)));
     }
 
     // ---------------------------------------------------------------- drawing
@@ -291,7 +311,8 @@ final class NowPlaying {
 
     /** Album art (and the card tint taken from it), or the music-note placeholder when null. */
     private void showArt(Bitmap cover, String key) {
-        if (key != null && key.equals(artKey)) return;
+        if (cover == null) key = ""; // the placeholder
+        if (key.equals(artKey)) return;
         artKey = key;
         if (cover != null) {
             cover = fitArt(cover);
@@ -340,6 +361,96 @@ final class NowPlaying {
             return pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString();
         } catch (PackageManager.NameNotFoundException e) {
             return pkg;
+        }
+    }
+
+    // ---------------------------------------------------------------- diagnostics
+
+    /**
+     * ⚙ → Media sources: what this head unit's players actually report, to see why one (e.g. the
+     * stock radio) doesn't show up. Lists media sessions, whether any audio is playing, and the
+     * current notifications (some players only announce themselves there). Shown on screen only.
+     */
+    void showSources() {
+        StringBuilder b = new StringBuilder();
+        if (!hasAccess()) {
+            b.append("Now-playing access is off, so Android won't list players.\n"
+                    + "Turn it on: ⚙ → Enable now-playing controls.");
+        } else {
+            List<MediaController> list = sessions;
+            if (!listenerRegistered) {
+                try {
+                    MediaSessionManager m = (MediaSessionManager) act.getSystemService(Context.MEDIA_SESSION_SERVICE);
+                    list = m.getActiveSessions(listenerComponent());
+                } catch (SecurityException ex) {
+                    list = new ArrayList<>();
+                }
+            }
+            AudioManager am = (AudioManager) act.getSystemService(Context.AUDIO_SERVICE);
+            b.append("Audio playing now: ").append(am.isMusicActive() ? "yes" : "no").append("\n\n");
+            b.append("Media sessions (").append(list.size()).append(")\n");
+            if (list.isEmpty()) b.append("  none\n");
+            for (MediaController c : list) {
+                b.append("• ").append(appLabel(c.getPackageName())).append(" (").append(c.getPackageName()).append(")");
+                if (isShown(c)) b.append("  ← shown");
+                PlaybackState ps = c.getPlaybackState();
+                b.append("\n   state: ").append(ps == null ? "none reported" : stateName(ps.getState()));
+                MediaMetadata md = c.getMetadata();
+                if (md == null) {
+                    b.append("\n   no track info");
+                } else {
+                    b.append("\n   title: ").append(orDash(md.getString(MediaMetadata.METADATA_KEY_TITLE)))
+                            .append("\n   artist: ").append(orDash(md.getString(MediaMetadata.METADATA_KEY_ARTIST)));
+                }
+                b.append("\n");
+            }
+            StatusBarNotification[] ns = MediaListener.active();
+            b.append("\nNotifications");
+            if (ns == null) {
+                b.append(": can't read right now\n");
+            } else {
+                b.append(" (").append(ns.length).append(")\n");
+                for (StatusBarNotification sbn : ns) {
+                    Bundle x = sbn.getNotification().extras;
+                    b.append("• ").append(appLabel(sbn.getPackageName())).append(" (").append(sbn.getPackageName()).append(")");
+                    if (sbn.isOngoing()) b.append(" · ongoing");
+                    if (x != null) {
+                        b.append("\n   ").append(orDash(x.getCharSequence(Notification.EXTRA_TITLE)))
+                                .append(" — ").append(orDash(x.getCharSequence(Notification.EXTRA_TEXT)));
+                    }
+                    b.append("\n");
+                }
+            }
+        }
+        Ui.dialog(act)
+                .setTitle("Media sources")
+                .setMessage(b.toString())
+                .setPositiveButton("Close", null)
+                .setNeutralButton("Refresh", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) { showSources(); }
+                })
+                .show();
+    }
+
+    private static String orDash(CharSequence s) {
+        return TextUtils.isEmpty(s) ? "—" : s.toString();
+    }
+
+    private static String stateName(int s) {
+        switch (s) {
+            case PlaybackState.STATE_NONE: return "none";
+            case PlaybackState.STATE_STOPPED: return "stopped";
+            case PlaybackState.STATE_PAUSED: return "paused";
+            case PlaybackState.STATE_PLAYING: return "playing";
+            case PlaybackState.STATE_FAST_FORWARDING: return "fast-forwarding";
+            case PlaybackState.STATE_REWINDING: return "rewinding";
+            case PlaybackState.STATE_BUFFERING: return "buffering";
+            case PlaybackState.STATE_ERROR: return "error";
+            case PlaybackState.STATE_CONNECTING: return "connecting";
+            case PlaybackState.STATE_SKIPPING_TO_PREVIOUS: return "skipping back";
+            case PlaybackState.STATE_SKIPPING_TO_NEXT: return "skipping ahead";
+            case PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM: return "skipping";
+            default: return "unknown (" + s + ")";
         }
     }
 
